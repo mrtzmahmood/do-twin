@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DoTwin — Pipeline Builder</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <style>
+    /* API bridge indicator */
+    #api-status {
+      position: fixed;
+      bottom: 12px;
+      left: 12px;
+      font: 11px/1.4 ui-monospace, monospace;
+      color: #666;
+      background: rgba(255,255,255,0.9);
+      padding: 4px 10px;
+      border-radius: 6px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+      z-index: 99999;
+      pointer-events: none;
+    }
+    #api-status.connected { color: #16a34a; }
+    #api-status.error { color: #dc2626; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <div id="api-status">⟳ connecting…</div>
+
+  <!-- API Bridge: exposes window.DoTwinAPI to the React app -->
+  <script>
+  (function() {
+    const BASE = '';  // same origin
+
+    window.DoTwinAPI = {
+      // ── Pipelines ──────────────────────────────────────────
+      async listPipelines() {
+        const r = await fetch(`${BASE}/api/pipelines`);
+        return r.json();
+      },
+      async getPipeline(id) {
+        const r = await fetch(`${BASE}/api/pipelines/${id}`);
+        if (!r.ok) throw new Error('Not found');
+        return r.json();
+      },
+      async savePipeline(pipeline) {
+        const id = pipeline.id;
+        const method = id ? 'PUT' : 'POST';
+        const url = id ? `${BASE}/api/pipelines/${id}` : `${BASE}/api/pipelines`;
+        const r = await fetch(url, {
+          method,
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(pipeline)
+        });
+        return r.json();
+      },
+      async deletePipeline(id) {
+        const r = await fetch(`${BASE}/api/pipelines/${id}`, { method: 'DELETE' });
+        return r.json();
+      },
+      // ── Node types ─────────────────────────────────────────
+      async getNodeTypes() {
+        const r = await fetch(`${BASE}/api/node-types`);
+        return r.json();
+      },
+      // ── Health ─────────────────────────────────────────────
+      async health() {
+        const r = await fetch(`${BASE}/api/health`);
+        return r.json();
+      }
+    };
+
+    // Status indicator
+    const el = document.getElementById('api-status');
+    window.DoTwinAPI.health()
+      .then(d => { el.textContent = `✓ API v${d.version} · ${d.pipelines_count} pipelines`; el.className = 'connected'; })
+      .catch(() => { el.textContent = '✗ API offline (standalone mode)'; el.className = 'error'; });
+  })();
+  </script>
+
+  <!-- Main app bundle (extracted from Claude Design) -->
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
