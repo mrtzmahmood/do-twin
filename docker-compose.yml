@@ -1,27 +1,163 @@
-version: "3.9"
-
 services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: dotwin-pipeline
+  # ---------------------------------------------------------------- storage
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-dotwin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-dotwin12345}
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web console
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------- queue
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"   # AMQP
+      - "15672:15672" # Management HTTP API / UI
+    volumes:
+      - ./rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      - ./rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------- mqtt
+  mosquitto:
+    image: eclipse-mosquitto:latest
+    ports:
+      - "1883:1883"   # raw MQTT
+      - "9883:9883"   # MQTT over WebSocket
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-log:/mosquitto/log
+
+  # ------------------------------------------------ sample DBs for the
+  # pipeline's "SQL Source" node to connect to — NOT the app's own storage.
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dotwin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dotwin12345}
+      POSTGRES_DB: ${POSTGRES_DB:-dotwin_sample}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dotwin} -d ${POSTGRES_DB:-dotwin_sample}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-dotwin12345}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-dotwin_sample}
+      MYSQL_USER: ${MYSQL_USER:-dotwin}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-dotwin12345}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./mysql-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-dotwin12345}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ------------------------------------------------------------------ worker
+  # Consumes queued pipeline runs (see rabbitmq/definitions.json) and
+  # federated-learning builds, executes them, and reports progress/results
+  # back over MQTT + MinIO — this is what the frontend's "Run pipeline" /
+  # "Build global model" actually wait on.
+  worker:
+    build: ./worker
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      MINIO_SECURE: "false"
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-dotwin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-dotwin12345}
+      MINIO_BUCKET: ${MINIO_BUCKET:-dotwin}
+
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USER: ${RABBITMQ_USER:-dotwin}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-dotwin12345}
+      QUEUE_NAME: dotwin.pipeline.runs
+
+      MQTT_HOST: mosquitto
+      MQTT_PORT: "1883"
+      TOPIC_PREFIX: dotwin
+    depends_on:
+      minio:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- backend
+  backend:
+    build: ./backend
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      MINIO_SECURE: "false"
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-dotwin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-dotwin12345}
+      MINIO_BUCKET: ${MINIO_BUCKET:-dotwin}
+
+      RABBITMQ_API_URL: http://rabbitmq:15672
+      RABBITMQ_USER: ${RABBITMQ_USER:-dotwin}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-dotwin12345}
+      RABBITMQ_VHOST: /
+
+      MQTT_HOST: mosquitto
+      MQTT_PORT: 1883
+
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
     ports:
       - "8000:8000"
-    volumes:
-      # Persist pipeline data outside the container
-      - ./data:/app/data
-      # Persist uploaded HTML files and backups
-      - ./uploads:/app/uploads
-      # Hot-reload frontend without rebuild
-      # (comment out in production)
-      - ./frontend:/app/frontend:ro
-    environment:
-      - PYTHONUNBUFFERED=1
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
+    depends_on:
+      minio:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------- frontend
+  nginx:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
+volumes:
+  minio-data:
+  rabbitmq-data:
+  mosquitto-data:
+  mosquitto-log:
+  postgres-data:
+  mysql-data:

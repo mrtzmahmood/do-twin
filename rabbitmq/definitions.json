@@ -1,0 +1,23 @@
+{
+  "rabbit_version": "3.13.0",
+  "users": [
+    { "name": "dotwin", "password": "dotwin12345", "tags": ["administrator"] }
+  ],
+  "vhosts": [
+    { "name": "/" }
+  ],
+  "permissions": [
+    { "user": "dotwin", "vhost": "/", "configure": ".*", "write": ".*", "read": ".*" }
+  ],
+  "exchanges": [
+    { "name": "dotwin.runs", "vhost": "/", "type": "topic", "durable": true, "auto_delete": false, "internal": false, "arguments": {} }
+  ],
+  "queues": [
+    { "name": "dotwin.pipeline.runs", "vhost": "/", "durable": true, "auto_delete": false, "arguments": {} },
+    { "name": "dotwin.federated.builds", "vhost": "/", "durable": true, "auto_delete": false, "arguments": {} }
+  ],
+  "bindings": [
+    { "source": "dotwin.runs", "vhost": "/", "destination": "dotwin.pipeline.runs", "destination_type": "queue", "routing_key": "dotwin.run", "arguments": {} },
+    { "source": "dotwin.runs", "vhost": "/", "destination": "dotwin.federated.builds", "destination_type": "queue", "routing_key": "dotwin.federated.build", "arguments": {} }
+  ]
+}
